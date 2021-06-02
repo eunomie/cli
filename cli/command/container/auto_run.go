@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -35,6 +37,7 @@ const (
 	autoNetLabel           = "com.docker.auto.net"
 	autoNameLabel          = "com.docker.auto.name"
 	autoMountLocalDirLabel = "com.docker.auto.mount-local-dir-to"
+	autoMountLabel         = "com.docker.auto.mount"
 	autoEnvLabel           = "com.docker.auto.env"
 )
 
@@ -344,7 +347,22 @@ var (
 			}
 			return
 		},
-		autoMountLocalDirLabel: func(labelValue string, copts *containerOptions, config *container.Config, ropts *runOptions) (cmd, details string, confirm bool, err error) {
+		autoMountLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions) (cmd, details string, confirm bool, err error) {
+			if mount := strings.TrimSpace(labelValue); mount != "" {
+				tokens := strings.Split(mount, ",")
+				if path := strings.TrimPrefix(tokens[1], "source="); strings.HasPrefix(path, "~/") {
+					usr, _ := user.Current()
+					dir := usr.HomeDir
+					tokens[1] = "source=" + filepath.Join(dir, path[2:])
+				}
+				m := strings.Join(tokens, ",")
+				cmd = "--mount " + m
+				details = "[--mount " + m + "] Attach a filesystem mount to the container"
+				confirm = true
+			}
+			return
+		},
+		autoMountLocalDirLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions) (cmd, details string, confirm bool, err error) {
 			if target := strings.TrimSpace(labelValue); target != "" {
 				var pwd string
 				pwd, err = os.Getwd()
@@ -361,7 +379,7 @@ var (
 			}
 			return
 		},
-		autoEnvLabel: func(labelValue string, copts *containerOptions, config *container.Config, ropts *runOptions) (cmd, details string, confirm bool, err error) {
+		autoEnvLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions) (cmd, details string, confirm bool, err error) {
 			if envs := strings.TrimSpace(labelValue); envs != "" {
 				for i, env := range strings.Split(envs, ",") {
 					err = copts.env.Set(env + "=" + os.Getenv(env))
