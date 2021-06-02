@@ -131,7 +131,11 @@ func runAutoRun(dockerCli command.Cli, flags *pflag.FlagSet, opts *autoRunOption
 		sigProxy: true,
 	}
 
-	_, _ = cmd.WriteString(os.Args[0])
+	_, _ = cmd.WriteString(os.Args[0] + " run")
+
+	if len(flags.Args()) > 1 {
+		copts.Args = flags.Args()[1:]
+	}
 
 	confirm := false
 	if err := parseMagicLabels(cmd, details, &confirm, copts, inspect.Config, ropts); err != nil {
@@ -144,8 +148,8 @@ func runAutoRun(dockerCli command.Cli, flags *pflag.FlagSet, opts *autoRunOption
 	}
 
 	_, _ = cmd.WriteString(" " + copts.Image)
-	if cmdArgs, ok := inspect.Config.Labels[autoCmdLabel]; ok {
-		_, _ = cmd.WriteString(" " + cmdArgs)
+	if len(copts.Args) > 0 {
+		_, _ = cmd.WriteString(" " + strings.Join(copts.Args, " "))
 	}
 
 	dockerCmd := cmd.String()
@@ -284,6 +288,10 @@ var (
 			return
 		},
 		autoCmdLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions) (cmd, details string, confirm bool, err error) {
+			if len(copts.Args) > 0 {
+				// arguments on command line override label value
+				return
+			}
 			var args []string
 			args, err = parseCommandLine(labelValue)
 			if err != nil {
