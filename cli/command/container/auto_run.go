@@ -29,6 +29,11 @@ const (
 	autoPublishLabel      = "com.docker.auto.publish"
 	autoPublishAllLabel   = "com.docker.auto.publish-all"
 	autoCmdLabel          = "com.docker.auto.cmd"
+	autoInteractiveLabel  = "com.docker.auto.interactive"
+	autoTTYLabel          = "com.docker.auto.tty"
+	autoPIDLabel          = "com.docker.auto.pid"
+	autoNetLabel          = "com.docker.auto.net"
+	autoNameLabel         = "com.docker.auto.name"
 )
 
 type autoRunOptions struct {
@@ -74,12 +79,21 @@ func NewAutoRunCommand(dockerCli command.Cli) *cobra.Command {
 func runAutoRun(dockerCli command.Cli, flags *pflag.FlagSet, opts *autoRunOptions, copts *containerOptions) error {
 	var (
 		ctx        = context.Background()
-		stderr     = dockerCli.Err()
+		details    = new(strings.Builder)
+		cmd        = new(strings.Builder)
+		stderr     io.Writer
+		out        io.Writer
 		trustedRef reference.Canonical
 		namedRef   reference.Named
 		inspect    types.ImageInspect
-		cmd        string
 	)
+
+	stderr = dockerCli.Err()
+	if opts.quiet {
+		out = io.Discard
+	} else {
+		out = dockerCli.Err()
+	}
 
 	setEnvForProxy(dockerCli, copts)
 
@@ -100,7 +114,7 @@ func runAutoRun(dockerCli command.Cli, flags *pflag.FlagSet, opts *autoRunOption
 	}
 
 	if !opts.quiet {
-		printDocHeader(stderr, copts.Image, inspect.Config.Labels)
+		printDocHeader(out, copts.Image, inspect.Config.Labels)
 	}
 
 	ropts := &runOptions{
@@ -114,25 +128,38 @@ func runAutoRun(dockerCli command.Cli, flags *pflag.FlagSet, opts *autoRunOption
 		sigProxy: true,
 	}
 
-	if err := parseMagicLabels(stderr, inspect.Config, copts); err != nil {
+	_, _ = cmd.WriteString(os.Args[0])
+
+	if err := parseMagicLabels(cmd, details, copts, inspect.Config, ropts); err != nil {
 		return err
 	}
 
+	if !opts.quiet {
+		printRunDetails(out, details, inspect.Config.Labels[autoCmdLabel])
+	}
+
+	_, _ = cmd.WriteString(" " + copts.Image)
+	if cmdArgs, ok := inspect.Config.Labels[autoCmdLabel]; ok {
+		_, _ = cmd.WriteString(" " + cmdArgs)
+	}
+
+	dockerCmd := cmd.String()
+
 	if opts.print {
-		_, _ = fmt.Fprintln(dockerCli.Out(), os.Args[0], cmd)
+		_, _ = fmt.Fprintln(dockerCli.Out(), dockerCmd)
 		os.Exit(0)
 	}
 
 	if opts.yes && !opts.quiet {
-		_, _ = fmt.Fprintln(stderr, "running:", os.Args[0], cmd)
+		_, _ = fmt.Fprintln(stderr, "running:", dockerCmd)
 	}
 
 	if !opts.yes {
 		_, _ = fmt.Fprintf(stderr, `
 the following command will be executed:
-    %s %s
+    %s
 
-are you OK to proceed? ([y]/n) `, os.Args[0], cmd)
+are you OK to proceed? ([y]/n) `, dockerCmd)
 		var response string
 
 		_, err := fmt.Scanln(&response)
@@ -216,28 +243,34 @@ func inspectImage(ctx context.Context, dockerCli command.Cli, img, platform stri
 }
 
 var (
-	wands = map[string]func(labelValue string, config *container.Config, copts *containerOptions) error{
-		autoRMLabel: func(labelValue string, _ *container.Config, copts *containerOptions) error {
+	wands = map[string]func(labelValue string, copts *containerOptions, config *container.Config, ropts *runOptions, cmd *strings.Builder, details *strings.Builder) error{
+		autoRMLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions, cmd *strings.Builder, details *strings.Builder) error {
 			if rm, _ := strconv.ParseBool(labelValue); rm {
 				copts.autoRemove = true
+				_, _ = cmd.WriteString(" --rm")
+				_, _ = details.WriteString("  * [--rm] Automatically remove the container when it exits\n")
 			}
 			return nil
 		},
-		autoPublishLabel: func(labelValue string, _ *container.Config, copts *containerOptions) error {
+		autoPublishLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions, cmd *strings.Builder, details *strings.Builder) error {
 			for _, p := range strings.Split(labelValue, ",") {
 				_ = copts.publish.Set(strings.TrimSpace(p))
+				_, _ = cmd.WriteString(" --publish " + p)
+				_, _ = details.WriteString("  * [--publish " + p + "] Publish a container's port(s) to the host\n")
 			}
 			return nil
 		},
-		autoPublishAllLabel: func(labelValue string, config *container.Config, copts *containerOptions) error {
+		autoPublishAllLabel: func(labelValue string, copts *containerOptions, config *container.Config, _ *runOptions, cmd *strings.Builder, details *strings.Builder) error {
 			if publishAll, _ := strconv.ParseBool(labelValue); publishAll {
 				for port := range config.ExposedPorts {
 					_ = copts.publish.Set(port.Port() + ":" + port.Port() + "/" + port.Proto())
 				}
+				_, _ = cmd.WriteString(" --publish-all")
+				_, _ = details.WriteString("  * [--publish-all] Publish all exposed ports to random ports\n")
 			}
 			return nil
 		},
-		autoCmdLabel: func(labelValue string, _ *container.Config, copts *containerOptions) error {
+		autoCmdLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions, _ *strings.Builder, _ *strings.Builder) error {
 			args, err := parseCommandLine(labelValue)
 			if err != nil {
 				return err
@@ -245,17 +278,55 @@ var (
 			copts.Args = args
 			return nil
 		},
+		autoInteractiveLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions, cmd *strings.Builder, details *strings.Builder) error {
+			if interactive, _ := strconv.ParseBool(labelValue); interactive {
+				copts.stdin = true
+				_, _ = cmd.WriteString(" --interactive")
+				_, _ = details.WriteString("  * [--interactive] Keep STDIN open even if not attached\n")
+			}
+			return nil
+		},
+		autoTTYLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions, cmd *strings.Builder, details *strings.Builder) error {
+			if tty, _ := strconv.ParseBool(labelValue); tty {
+				copts.tty = true
+				_, _ = cmd.WriteString(" --tty")
+				_, _ = details.WriteString("  * [--tty] Allocate a pseudo-TTY\n")
+			}
+			return nil
+		},
+		autoPIDLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions, cmd *strings.Builder, details *strings.Builder) error {
+			if pidMode := strings.TrimSpace(labelValue); pidMode != "" {
+				copts.pidMode = pidMode
+				_, _ = cmd.WriteString(" --pid " + pidMode)
+				_, _ = details.WriteString("  * [--pid " + pidMode + "] PID namespace to use\n")
+			}
+			return nil
+		},
+		autoNetLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions, cmd *strings.Builder, details *strings.Builder) error {
+			if netMode := strings.TrimSpace(labelValue); netMode != "" {
+				if err := copts.netMode.Set(netMode); err != nil {
+					return err
+				}
+				_, _ = cmd.WriteString(" --net " + netMode)
+				_, _ = details.WriteString("  * [--net " + netMode + "] Network config in swarm mode\n")
+			}
+			return nil
+		},
+		autoNameLabel: func(labelValue string, _ *containerOptions, _ *container.Config, ropts *runOptions, cmd *strings.Builder, details *strings.Builder) error {
+			if name := strings.TrimSpace(labelValue); name != "" {
+				ropts.name = name
+				_, _ = cmd.WriteString(" --name " + name)
+				_, _ = details.WriteString("  * [--name " + name + "] Assign a name to the container\n")
+			}
+			return nil
+		},
 	}
 )
 
-func parseMagicLabels(stderr io.Writer, config *container.Config, copts *containerOptions) error {
-	_, _ = fmt.Fprintln(stderr, `
-
-👷 auto generated options:`)
-
+func parseMagicLabels(cmd *strings.Builder, details *strings.Builder, copts *containerOptions, config *container.Config, ropts *runOptions) error {
 	for name, value := range config.Labels {
 		if wand, ok := wands[name]; ok {
-			if err := wand(value, config, copts); err != nil {
+			if err := wand(value, copts, config, ropts, cmd, details); err != nil {
 				return err
 			}
 		}
@@ -264,20 +335,34 @@ func parseMagicLabels(stderr io.Writer, config *container.Config, copts *contain
 	return nil
 }
 
-func printDocHeader(stderr io.Writer, imageName string, labels map[string]string) {
-	_, _ = fmt.Fprintf(stderr, `
+func printRunDetails(out io.Writer, details *strings.Builder, cmdArgs string) {
+	_, _ = fmt.Fprintf(out, `
 
-🪄 Auto-running %s
+Auto generated options:
+
+%s
+`, details.String())
+	if cmdArgs != "" {
+		_, _ = fmt.Fprintf(out, "  * [%s] Arguments to pass to the entrypoint\n", cmdArgs)
+	}
+	_, _ = fmt.Fprintln(out)
+}
+
+func printDocHeader(out io.Writer, imageName string, labels map[string]string) {
+	_, _ = fmt.Fprintf(out, `
+
+Auto-running %s
+
 `, imageName)
 
 	if ociTitle, ok := labels[ociTitleLabel]; ok {
-		_, _ = fmt.Fprint(stderr, ociTitle)
+		_, _ = fmt.Fprint(out, ociTitle)
 		if ociDesc, ok := labels[ociDescriptionLabel]; ok {
-			_, _ = fmt.Fprintln(stderr, ":", ociDesc)
+			_, _ = fmt.Fprintln(out, ":", ociDesc)
 		}
 	}
 	if ociDoc, ok := labels[ociDocumentationLabel]; ok {
-		_, _ = fmt.Fprintln(stderr, "📒 See more at", ociDoc)
+		_, _ = fmt.Fprintln(out, "See more at", ociDoc)
 	}
-	_, _ = fmt.Fprintln(stderr)
+	_, _ = fmt.Fprintln(out)
 }
