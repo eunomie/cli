@@ -79,14 +79,15 @@ func NewAutoRunCommand(dockerCli command.Cli) *cobra.Command {
 
 func runAutoRun(dockerCli command.Cli, flags *pflag.FlagSet, opts *autoRunOptions, copts *containerOptions) error {
 	var (
-		ctx        = context.Background()
-		details    = new(strings.Builder)
-		cmd        = new(strings.Builder)
-		stderr     io.Writer
-		out        io.Writer
-		trustedRef reference.Canonical
-		namedRef   reference.Named
-		inspect    types.ImageInspect
+		ctx         = context.Background()
+		details     = new(strings.Builder)
+		cmd         = new(strings.Builder)
+		stderr      io.Writer
+		out         io.Writer
+		trustedRef  reference.Canonical
+		namedRef    reference.Named
+		inspect     types.ImageInspect
+		needConfirm bool
 	)
 
 	stderr = dockerCli.Err()
@@ -131,9 +132,11 @@ func runAutoRun(dockerCli command.Cli, flags *pflag.FlagSet, opts *autoRunOption
 
 	_, _ = cmd.WriteString(os.Args[0])
 
-	if err := parseMagicLabels(cmd, details, copts, inspect.Config, ropts); err != nil {
+	confirm := false
+	if err := parseMagicLabels(cmd, details, &confirm, copts, inspect.Config, ropts); err != nil {
 		return err
 	}
+	needConfirm = confirm && !opts.yes
 
 	if !opts.quiet {
 		printRunDetails(out, details, inspect.Config.Labels[autoCmdLabel])
@@ -151,11 +154,11 @@ func runAutoRun(dockerCli command.Cli, flags *pflag.FlagSet, opts *autoRunOption
 		os.Exit(0)
 	}
 
-	if opts.yes && !opts.quiet {
+	if !needConfirm && !opts.quiet {
 		_, _ = fmt.Fprintln(stderr, "running:", dockerCmd)
 	}
 
-	if !opts.yes {
+	if needConfirm {
 		_, _ = fmt.Fprintf(stderr, `
 the following command will be executed:
     %s
@@ -244,106 +247,129 @@ func inspectImage(ctx context.Context, dockerCli command.Cli, img, platform stri
 }
 
 var (
-	wands = map[string]func(labelValue string, copts *containerOptions, config *container.Config, ropts *runOptions, cmd *strings.Builder, details *strings.Builder) error{
-		autoRMLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions, cmd *strings.Builder, details *strings.Builder) error {
+	wands = map[string]func(labelValue string, copts *containerOptions, config *container.Config, ropts *runOptions) (cmd, details string, confirm bool, err error){
+		autoRMLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions) (cmd, details string, confirm bool, err error) {
 			if rm, _ := strconv.ParseBool(labelValue); rm {
 				copts.autoRemove = true
-				_, _ = cmd.WriteString(" --rm")
-				_, _ = details.WriteString("  * [--rm] Automatically remove the container when it exits\n")
+				cmd = "--rm"
+				details = "[--rm] Automatically remove the container when it exits"
 			}
-			return nil
+			return
 		},
-		autoPublishLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions, cmd *strings.Builder, details *strings.Builder) error {
-			for _, p := range strings.Split(labelValue, ",") {
+		autoPublishLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions) (cmd, details string, confirm bool, err error) {
+			for i, p := range strings.Split(labelValue, ",") {
 				_ = copts.publish.Set(strings.TrimSpace(p))
-				_, _ = cmd.WriteString(" --publish " + p)
-				_, _ = details.WriteString("  * [--publish " + p + "] Publish a container's port(s) to the host\n")
+				if i > 0 {
+					cmd += " "
+				}
+				cmd += "--publish " + p
 			}
-			return nil
+			if cmd != "" {
+				details = "[" + cmd + "] Publish a container's port(s) to the host"
+				confirm = true
+			}
+			return
 		},
-		autoPublishAllLabel: func(labelValue string, copts *containerOptions, config *container.Config, _ *runOptions, cmd *strings.Builder, details *strings.Builder) error {
+		autoPublishAllLabel: func(labelValue string, copts *containerOptions, config *container.Config, _ *runOptions) (cmd, details string, confirm bool, err error) {
 			if publishAll, _ := strconv.ParseBool(labelValue); publishAll {
 				for port := range config.ExposedPorts {
 					_ = copts.publish.Set(port.Port() + ":" + port.Port() + "/" + port.Proto())
 				}
-				_, _ = cmd.WriteString(" --publish-all")
-				_, _ = details.WriteString("  * [--publish-all] Publish all exposed ports to random ports\n")
+				cmd = "--publish-all"
+				details = "[--publish-all] Publish all exposed ports to random ports"
+				confirm = true
 			}
-			return nil
+			return
 		},
-		autoCmdLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions, _ *strings.Builder, _ *strings.Builder) error {
-			args, err := parseCommandLine(labelValue)
+		autoCmdLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions) (cmd, details string, confirm bool, err error) {
+			var args []string
+			args, err = parseCommandLine(labelValue)
 			if err != nil {
-				return err
+				return
 			}
 			copts.Args = args
-			return nil
+			return
 		},
-		autoInteractiveLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions, cmd *strings.Builder, details *strings.Builder) error {
+		autoInteractiveLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions) (cmd, details string, confirm bool, err error) {
 			if interactive, _ := strconv.ParseBool(labelValue); interactive {
 				copts.stdin = true
-				_, _ = cmd.WriteString(" --interactive")
-				_, _ = details.WriteString("  * [--interactive] Keep STDIN open even if not attached\n")
+				cmd = "--interactive"
+				details = "[--interactive] Keep STDIN open even if not attached"
 			}
-			return nil
+			return
 		},
-		autoTTYLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions, cmd *strings.Builder, details *strings.Builder) error {
+		autoTTYLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions) (cmd, details string, confirm bool, err error) {
 			if tty, _ := strconv.ParseBool(labelValue); tty {
 				copts.tty = true
-				_, _ = cmd.WriteString(" --tty")
-				_, _ = details.WriteString("  * [--tty] Allocate a pseudo-TTY\n")
+				cmd = "--tty"
+				details = "[--tty] Allocate a pseudo-TTY"
 			}
-			return nil
+			return
 		},
-		autoPIDLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions, cmd *strings.Builder, details *strings.Builder) error {
+		autoPIDLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions) (cmd, details string, confirm bool, err error) {
 			if pidMode := strings.TrimSpace(labelValue); pidMode != "" {
 				copts.pidMode = pidMode
-				_, _ = cmd.WriteString(" --pid " + pidMode)
-				_, _ = details.WriteString("  * [--pid " + pidMode + "] PID namespace to use\n")
+				cmd = "--pid " + pidMode
+				details = "[--pid " + pidMode + "] PID namespace to use"
+				confirm = true
 			}
-			return nil
+			return
 		},
-		autoNetLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions, cmd *strings.Builder, details *strings.Builder) error {
+		autoNetLabel: func(labelValue string, copts *containerOptions, _ *container.Config, _ *runOptions) (cmd, details string, confirm bool, err error) {
 			if netMode := strings.TrimSpace(labelValue); netMode != "" {
-				if err := copts.netMode.Set(netMode); err != nil {
-					return err
+				if err = copts.netMode.Set(netMode); err != nil {
+					return
 				}
-				_, _ = cmd.WriteString(" --net " + netMode)
-				_, _ = details.WriteString("  * [--net " + netMode + "] Network config in swarm mode\n")
+				cmd = "--net " + netMode
+				details = "[--net " + netMode + "] Network config in swarm mode"
+				confirm = true
 			}
-			return nil
+			return
 		},
-		autoNameLabel: func(labelValue string, _ *containerOptions, _ *container.Config, ropts *runOptions, cmd *strings.Builder, details *strings.Builder) error {
+		autoNameLabel: func(labelValue string, _ *containerOptions, _ *container.Config, ropts *runOptions) (cmd, details string, confirm bool, err error) {
 			if name := strings.TrimSpace(labelValue); name != "" {
 				ropts.name = name
-				_, _ = cmd.WriteString(" --name " + name)
-				_, _ = details.WriteString("  * [--name " + name + "] Assign a name to the container\n")
+				cmd = "--name " + name
+				details = "[--name " + name + "] Assign a name to the container"
 			}
-			return nil
+			return
 		},
-		autoMountLocalDirLabel: func(labelValue string, copts *containerOptions, config *container.Config, ropts *runOptions, cmd *strings.Builder, details *strings.Builder) error {
+		autoMountLocalDirLabel: func(labelValue string, copts *containerOptions, config *container.Config, ropts *runOptions) (cmd, details string, confirm bool, err error) {
 			if target := strings.TrimSpace(labelValue); target != "" {
-				pwd, err := os.Getwd()
+				var pwd string
+				pwd, err = os.Getwd()
 				if err != nil {
-					return err
+					return
 				}
 				mount := "type=bind,source=" + pwd + ",target=" + target
-				if err := copts.mounts.Set(mount); err != nil {
-					return err
+				if err = copts.mounts.Set(mount); err != nil {
+					return
 				}
-				_, _ = cmd.WriteString(" --mount " + mount)
-				_, _ = details.WriteString("  * [--mount " + mount + "] Attach a filesystem mount to the container\n")
+				cmd = "--mount " + mount
+				details = "[--mount " + mount + "] Attach a filesystem mount to the container"
+				confirm = true
 			}
-			return nil
+			return
 		},
 	}
 )
 
-func parseMagicLabels(cmd *strings.Builder, details *strings.Builder, copts *containerOptions, config *container.Config, ropts *runOptions) error {
+func parseMagicLabels(cmd *strings.Builder, details *strings.Builder, confirm *bool, copts *containerOptions, config *container.Config, ropts *runOptions) error {
 	for name, value := range config.Labels {
 		if wand, ok := wands[name]; ok {
-			if err := wand(value, copts, config, ropts, cmd, details); err != nil {
+			c, d, needConfirm, err := wand(value, copts, config, ropts)
+			if err != nil {
 				return err
+			} else {
+				if c != "" {
+					cmd.WriteString(" " + c)
+				}
+				if d != "" {
+					details.WriteString("  * " + d + "\n")
+				}
+				if needConfirm {
+					*confirm = true
+				}
 			}
 		}
 	}
