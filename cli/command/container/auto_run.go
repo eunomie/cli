@@ -35,6 +35,7 @@ const (
 	autoNetLabel           = "com.docker.auto.net"
 	autoNameLabel          = "com.docker.auto.name"
 	autoMountLocalDirLabel = "com.docker.auto.mount-local-dir-to"
+	autoEnvLabel           = "com.docker.auto.env"
 )
 
 type autoRunOptions struct {
@@ -156,6 +157,7 @@ func runAutoRun(dockerCli command.Cli, flags *pflag.FlagSet, opts *autoRunOption
 
 	if !needConfirm && !opts.quiet {
 		_, _ = fmt.Fprintln(stderr, "running:", dockerCmd)
+		_, _ = fmt.Fprintln(stderr)
 	}
 
 	if needConfirm {
@@ -351,6 +353,24 @@ var (
 			}
 			return
 		},
+		autoEnvLabel: func(labelValue string, copts *containerOptions, config *container.Config, ropts *runOptions) (cmd, details string, confirm bool, err error) {
+			if envs := strings.TrimSpace(labelValue); envs != "" {
+				for i, env := range strings.Split(envs, ",") {
+					err = copts.env.Set(env + "=" + os.Getenv(env))
+					if err != nil {
+						return
+					}
+					if i > 0 {
+						cmd += " "
+					}
+					cmd += "--env " + env
+				}
+				if cmd != "" {
+					details = "[" + cmd + "] Set environment variables"
+				}
+			}
+			return
+		},
 	}
 )
 
@@ -379,7 +399,6 @@ func parseMagicLabels(cmd *strings.Builder, details *strings.Builder, confirm *b
 
 func printRunDetails(out io.Writer, details *strings.Builder, cmdArgs string) {
 	_, _ = fmt.Fprintf(out, `
-
 Auto generated options:
 
 %s
