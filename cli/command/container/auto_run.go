@@ -22,18 +22,19 @@ import (
 )
 
 const (
-	ociTitleLabel         = "org.opencontainers.image.title"
-	ociDescriptionLabel   = "org.opencontainers.image.description"
-	ociDocumentationLabel = "org.opencontainers.image.documentation"
-	autoRMLabel           = "com.docker.auto.rm"
-	autoPublishLabel      = "com.docker.auto.publish"
-	autoPublishAllLabel   = "com.docker.auto.publish-all"
-	autoCmdLabel          = "com.docker.auto.cmd"
-	autoInteractiveLabel  = "com.docker.auto.interactive"
-	autoTTYLabel          = "com.docker.auto.tty"
-	autoPIDLabel          = "com.docker.auto.pid"
-	autoNetLabel          = "com.docker.auto.net"
-	autoNameLabel         = "com.docker.auto.name"
+	ociTitleLabel          = "org.opencontainers.image.title"
+	ociDescriptionLabel    = "org.opencontainers.image.description"
+	ociDocumentationLabel  = "org.opencontainers.image.documentation"
+	autoRMLabel            = "com.docker.auto.rm"
+	autoPublishLabel       = "com.docker.auto.publish"
+	autoPublishAllLabel    = "com.docker.auto.publish-all"
+	autoCmdLabel           = "com.docker.auto.cmd"
+	autoInteractiveLabel   = "com.docker.auto.interactive"
+	autoTTYLabel           = "com.docker.auto.tty"
+	autoPIDLabel           = "com.docker.auto.pid"
+	autoNetLabel           = "com.docker.auto.net"
+	autoNameLabel          = "com.docker.auto.name"
+	autoMountLocalDirLabel = "com.docker.auto.mount-local-dir-to"
 )
 
 type autoRunOptions struct {
@@ -317,6 +318,21 @@ var (
 				ropts.name = name
 				_, _ = cmd.WriteString(" --name " + name)
 				_, _ = details.WriteString("  * [--name " + name + "] Assign a name to the container\n")
+			}
+			return nil
+		},
+		autoMountLocalDirLabel: func(labelValue string, copts *containerOptions, config *container.Config, ropts *runOptions, cmd *strings.Builder, details *strings.Builder) error {
+			if target := strings.TrimSpace(labelValue); target != "" {
+				pwd, err := os.Getwd()
+				if err != nil {
+					return err
+				}
+				mount := "type=bind,source=" + pwd + ",target=" + target
+				if err := copts.mounts.Set(mount); err != nil {
+					return err
+				}
+				_, _ = cmd.WriteString(" --mount " + mount)
+				_, _ = details.WriteString("  * [--mount " + mount + "] Attach a filesystem mount to the container\n")
 			}
 			return nil
 		},
