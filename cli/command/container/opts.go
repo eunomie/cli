@@ -170,40 +170,7 @@ func initContainerOptions() *containerOptions {
 
 // addFlags adds all command line flags that will be used by parse to the FlagSet
 func addFlags(flags *pflag.FlagSet) *containerOptions {
-	copts := &containerOptions{
-		aliases:           opts.NewListOpts(nil),
-		attach:            opts.NewListOpts(validateAttach),
-		blkioWeightDevice: opts.NewWeightdeviceOpt(opts.ValidateWeightDevice),
-		capAdd:            opts.NewListOpts(nil),
-		capDrop:           opts.NewListOpts(nil),
-		dns:               opts.NewListOpts(opts.ValidateIPAddress),
-		dnsOptions:        opts.NewListOpts(nil),
-		dnsSearch:         opts.NewListOpts(opts.ValidateDNSSearch),
-		deviceCgroupRules: opts.NewListOpts(validateDeviceCgroupRule),
-		deviceReadBps:     opts.NewThrottledeviceOpt(opts.ValidateThrottleBpsDevice),
-		deviceReadIOps:    opts.NewThrottledeviceOpt(opts.ValidateThrottleIOpsDevice),
-		deviceWriteBps:    opts.NewThrottledeviceOpt(opts.ValidateThrottleBpsDevice),
-		deviceWriteIOps:   opts.NewThrottledeviceOpt(opts.ValidateThrottleIOpsDevice),
-		devices:           opts.NewListOpts(nil), // devices can only be validated after we know the server OS
-		env:               opts.NewListOpts(opts.ValidateEnv),
-		envFile:           opts.NewListOpts(nil),
-		expose:            opts.NewListOpts(nil),
-		extraHosts:        opts.NewListOpts(opts.ValidateExtraHost),
-		groupAdd:          opts.NewListOpts(nil),
-		labels:            opts.NewListOpts(opts.ValidateLabel),
-		labelsFile:        opts.NewListOpts(nil),
-		linkLocalIPs:      opts.NewListOpts(nil),
-		links:             opts.NewListOpts(opts.ValidateLink),
-		loggingOpts:       opts.NewListOpts(nil),
-		publish:           opts.NewListOpts(nil),
-		securityOpt:       opts.NewListOpts(nil),
-		storageOpt:        opts.NewListOpts(nil),
-		sysctls:           opts.NewMapOpts(nil, opts.ValidateSysctl),
-		tmpfs:             opts.NewListOpts(nil),
-		ulimits:           opts.NewUlimitOpt(nil),
-		volumes:           opts.NewListOpts(nil),
-		volumesFrom:       opts.NewListOpts(nil),
-	}
+	copts := initContainerOptions()
 
 	// General purpose flags
 	flags.VarP(&copts.attach, "attach", "a", "Attach to STDIN, STDOUT or STDERR")
