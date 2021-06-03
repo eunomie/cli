@@ -55,7 +55,7 @@ func NewAutoRunCommand(dockerCli command.Cli) *cobra.Command {
 	copts := initContainerOptions()
 
 	cmd := &cobra.Command{
-		Use:   "auto-run IMAGE",
+		Use:   "auto-run IMAGE [ARG...]",
 		Short: "Run a command in a new container with default configuration",
 		Args:  cli.RequiresMinArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
